@@ -5,21 +5,20 @@ import { useNinetailed } from "@ninetailed/experience.js-react";
 import { usePathname } from "next/navigation";
 
 export default function NinetailedIdentify() {
-  const { identify, page, onIsInitialized, profileState } =
+  const { identify, page, track, onIsInitialized, profileState } =
     useNinetailed();
-
   const pathname = usePathname();
+
+  // console.log("[NT:PROFILE_STATE]", profileState);
 
   useEffect(() => {
     console.log("[NT] 🚀 NinetailedIdentify mounted | pathname:", pathname);
-    console.log("[NT] 🔍 profileState:", profileState);
 
     onIsInitialized(() => {
       console.log("[NT] ✅ onIsInitialized fired!");
 
-      // ✅ Generate / reuse userId
+      // Step 1 — userId
       let userId = localStorage.getItem("nt-user-id");
-
       if (!userId) {
         userId = "user-" + Math.random().toString(36).substring(2, 10);
         localStorage.setItem("nt-user-id", userId);
@@ -28,25 +27,30 @@ export default function NinetailedIdentify() {
         console.log("[NT] 🔁 Existing userId:", userId);
       }
 
-      // ✅ Identify user
+      // Step 2 — identify → page → visit.count
       identify(userId)
         .then(() => {
           console.log("[NT] ✅ identify success");
-
-          // ✅ Track page view (IMPORTANT)
           return page();
         })
         .then(() => {
           console.log("[NT] ✅ page tracked");
+
+          // ✅ This feeds the "Visit Count" metric in NT Insights
+          return track("visit.count");
+        })
+        .then((res) => {
+          console.log("[NT] ✅ visit.count tracked | response:", res);
+          console.log("[NT] 📊 profileState after track:", profileState);
+        })
+
+        .then(() => {
+          console.log("[NT] ✅ visit.count tracked → should appear in Insights");
         })
         .catch((err) => {
-          console.error("[NT] ❌ Error:", err);
+          console.error("[NT] ❌ Chain failed:", err);
         });
     });
-
-    // ❌ REMOVE fallback tracking (VERY IMPORTANT)
-    // No visit tracking here — handled inside ExperimentCard
-
   }, [pathname]);
 
   return null;
