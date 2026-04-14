@@ -1,6 +1,5 @@
 import { getMeetingPlaceData } from "@/lib/getMeetingPlaceData";
 import { getVariant } from "@/lib/experiment";
-import { EXPERIMENT } from "@/lib/variantConfig";
 import EventListWithExperiment from "@/components/EventListWithExperiment";
 
 export default async function Page() {
@@ -13,33 +12,40 @@ export default async function Page() {
       getVariant(),
     ]);
 
-    // Find which event belongs to this variant using the hardcoded IDs
-    const variantEventId = EXPERIMENT.mapping[variant];
+    // variant "A" → show baseline (index 0 = Event B)
+    // variant "B" → show NT variant (index 1 = Event A)
+    const variantIndex = variant === "B" ? 1 : 0;
 
-    // Resolve each event: if it has an ntExperience with a variant matching
-    // the assigned variant ID, swap it in — otherwise show baseline
+    console.log(`🎯 Cookie Variant: ${variant} → variantIndex: ${variantIndex}`);
+
     const resolvedEvents = events.map((event) => {
-      const experience = event?.ntExperiencesCollection?.items?.[0];
-      if (!experience) return event;
+      const ntVariants =
+        event?.ntExperiencesCollection?.items?.[0]
+          ?.ntVariantsCollection?.items ?? [];
 
-      const variants = experience?.ntVariantsCollection?.items ?? [];
-
-      // variantIndex: 0 = baseline (Event B), 1 = variant (Event A)
-      const isBaseline = event.sys.id === EXPERIMENT.mapping.A;
-      const variantItem = variants.find(
-        (v) => v.sys.id === variantEventId
+      console.log(
+        `📦 Event: "${event.name}" | NT variants: ${ntVariants.length}`,
+        ntVariants.map((v: any) => v.name)
       );
 
-      // If this event IS the experiment event, swap based on variant
-      if (isBaseline && variant === "B") {
-        // Show variant (Event A) instead
-        return variantItem ?? event;
+      // No experiment on this event — show as-is
+      if (!ntVariants.length) return event;
+
+      // variantIndex 0 → baseline (the event itself)
+      // variantIndex 1 → first NT variant (Event A)
+      if (variantIndex === 0) {
+        console.log(`✅ Showing BASELINE: ${event.name}`);
+        return event;
+      }
+
+      const selectedVariant = ntVariants[variantIndex - 1]; // index 1 → ntVariants[0]
+      if (selectedVariant) {
+        console.log(`✅ Showing NT VARIANT: ${selectedVariant.name}`);
+        return selectedVariant;
       }
 
       return event;
     });
-
-    console.log(`✅ Page loaded | Variant: ${variant} | Events: ${resolvedEvents.length}`);
 
     return <EventListWithExperiment events={resolvedEvents} variant={variant} />;
   } catch (error) {
