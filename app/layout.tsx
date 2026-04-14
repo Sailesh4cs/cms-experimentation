@@ -1,8 +1,11 @@
-"use client";
-
-import NinetailedIdentify from "@/components/NinetailedIdentify";
-import { NinetailedProvider } from "@ninetailed/experience.js-react";
+// NO "use client" here — layout must be a server component
+import type { Metadata } from "next";
 import "./globals.css";
+import NinetailedClientProvider from "@/components/NinetailedClientProvider";
+
+export const metadata: Metadata = {
+  title: "Events",
+};
 
 export default function RootLayout({
   children,
@@ -12,13 +15,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <NinetailedProvider
-          clientId="598aeaf8-5f3f-4cf3-95b4-39e9f4076044" //from Contentful
-        >
-          <NinetailedIdentify />
+        <NinetailedClientProvider>
           {children}
-        </NinetailedProvider>
-        
+        </NinetailedClientProvider>
       </body>
     </html>
   );
