@@ -12,12 +12,10 @@ import {
 function ExperimentCard({ eventItem }: { eventItem: any }) {
   const { track } = useNinetailed();
 
-  // ✅ SAFE extraction
   const exp = eventItem?.ntExperiencesCollection?.items?.[0];
 
-  // ✅ If no experiment → fallback UI
-  if (!exp || !exp?.sys?.id) {
-    console.warn("[NT] ❌ No experiment found → fallback to normal card");
+  // No experiment attached → render baseline card directly
+  if (!exp?.sys?.id) {
     return <EventCardUI eventItem={eventItem} />;
   }
 
@@ -26,13 +24,10 @@ function ExperimentCard({ eventItem }: { eventItem: any }) {
     .filter((v: any) => v != null && v?.sys?.id != null)
     .map((v: any) => ({ ...v, id: v.sys.id }));
 
-  // ✅ Extra safety: if no variants
   if (safeVariants.length === 0) {
-    console.warn("[NT] ❌ No variants found → fallback");
     return <EventCardUI eventItem={eventItem} />;
   }
 
-  // ─── Experience Config ─────────────────────────────────
   const experiences = [
     {
       id: exp.sys.id,
@@ -57,29 +52,16 @@ function ExperimentCard({ eventItem }: { eventItem: any }) {
     },
   ] as unknown as ExperienceConfiguration<any>[];
 
-  const { variant, variantIndex, loading, isPersonalized } =
-    useExperience({
-      baseline: { ...eventItem, id: eventItem.sys.id },
-      experiences,
-    });
+  const { variant, variantIndex, loading, isPersonalized } = useExperience({
+    baseline: { ...eventItem, id: eventItem.sys.id },
+    experiences,
+  });
 
-  // ─── Middleware fallback ───────────────────────────────
-  const getMiddlewareVariant = (): "A" | "B" | null => {
-    if (typeof document === "undefined") return null;
-    const match = document.cookie.match(/(?:^|;\s*)event_ab_test=([AB])/);
-    return match ? (match[1] as "A" | "B") : null;
-  };
-
-  const middlewareVariant = getMiddlewareVariant();
-
+  // Use NT-assigned variant; fall back to baseline
   const finalEvent: any =
-    isPersonalized && variant
-      ? variant
-      : middlewareVariant === "A" && safeVariants[0]
-      ? safeVariants[0]
-      : eventItem;
+    isPersonalized && variant ? variant : eventItem;
 
-  // ─── ✅ Track visit correctly ──────────────────────────
+  // Track visit.count once NT has resolved the variant
   useEffect(() => {
     if (!loading && finalEvent) {
       track("visit.count", {
@@ -87,28 +69,17 @@ function ExperimentCard({ eventItem }: { eventItem: any }) {
         variantIndex,
       });
     }
-  }, [loading, finalEvent]);
+  }, [loading]);
 
   const handleClick = () => {
-    track("ctr", {
-      eventId: finalEvent?.sys?.id,
-      variantIndex,
-    });
-
-    track("eventbooking.count", {
-      eventId: finalEvent?.sys?.id,
-      variantIndex,
-    });
+    track("ctr", { eventId: finalEvent?.sys?.id, variantIndex });
+    track("eventbooking.count", { eventId: finalEvent?.sys?.id, variantIndex });
   };
 
   if (loading) {
     return (
       <div
-        style={{
-          height: "280px",
-          background: "#f3f4f6",
-          borderRadius: "16px",
-        }}
+        style={{ height: "280px", background: "#f3f4f6", borderRadius: "16px" }}
       />
     );
   }
@@ -116,7 +87,7 @@ function ExperimentCard({ eventItem }: { eventItem: any }) {
   return <EventCardUI eventItem={finalEvent} onClick={handleClick} />;
 }
 
-// ─── UI Component ───────────────────────────────────────
+// ─── Pure UI ────────────────────────────────────────────
 function EventCardUI({
   eventItem,
   onClick,
@@ -132,9 +103,64 @@ function EventCardUI({
       className="block h-full"
       onClick={onClick}
     >
-      <div style={{ padding: "16px" }}>
-        <h3>{eventItem?.name}</h3>
-        {imageUrl && <img src={imageUrl} alt={eventItem?.name} />}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "16px",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          height: "100%",
+          cursor: "pointer",
+        }}
+      >
+        <div style={{ width: "100%", height: "180px", overflow: "hidden", flexShrink: 0 }}>
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={eventItem?.name ?? "Event"}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          ) : (
+            <div
+              style={{
+                width: "100%", height: "100%", background: "#e5e7eb",
+                display: "flex", alignItems: "center",
+                justifyContent: "center", color: "#9ca3af", fontSize: "14px",
+              }}
+            >
+              No Image
+            </div>
+          )}
+        </div>
+        <div style={{ padding: "16px", display: "flex", flexDirection: "column", flexGrow: 1 }}>
+          <p style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px", margin: 0 }}>
+            {eventItem?.startDate
+              ? new Date(eventItem.startDate).toDateString()
+              : ""}
+          </p>
+          <h2
+            style={{
+              fontSize: "14px", fontWeight: 600, color: "#1f2937",
+              marginTop: "6px", marginBottom: "auto",
+              display: "-webkit-box", WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical", overflow: "hidden", minHeight: "40px",
+            }}
+          >
+            {eventItem?.name ?? "Untitled Event"}
+          </h2>
+          <div style={{ marginTop: "12px" }}>
+            <span
+              style={{
+                fontSize: "12px", background: "#dcfce7",
+                color: "#15803d", padding: "4px 10px", borderRadius: "999px",
+              }}
+            >
+              Event
+            </span>
+          </div>
+        </div>
       </div>
     </Link>
   );
