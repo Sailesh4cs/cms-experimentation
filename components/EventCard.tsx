@@ -8,86 +8,222 @@ import {
   useExperience,
   ExperienceConfiguration,
 } from "@ninetailed/experience.js-react";
+import { ExperienceMapper } from "@ninetailed/experience.js-utils";
+import { useNinetailedExperiences } from "@/components/NinetailedClientProvider";
 
-function ExperimentCard({ eventItem }: { eventItem: any }) {
+// ─── Loading skeleton ─────────────────────────────────────────────────────────
+function EventCardSkeleton() {
+  return (
+    <div
+      style={{ height: "280px", background: "#f3f4f6", borderRadius: "16px" }}
+    />
+  );
+}
+
+// ─── ExperimentCard ───────────────────────────────────────────────────────────
+function ExperimentCard({
+  eventItem,
+  allEvents = [],
+}: {
+  eventItem: any;
+  allEvents?: any[];
+}) {
   const { track } = useNinetailed();
+  const { experiences: registeredExperiences } = useNinetailedExperiences();
 
   const exp = eventItem?.ntExperiencesCollection?.items?.[0];
 
-  // No experiment attached → render baseline card directly
-  if (!exp?.sys?.id) {
-    return <EventCardUI eventItem={eventItem} />;
-  }
-
-  const rawVariants = exp?.ntVariantsCollection?.items ?? [];
-  const safeVariants = rawVariants
-    .filter((v: any) => v != null && v?.sys?.id != null)
-    .map((v: any) => ({ ...v, id: v.sys.id }));
-
-  if (safeVariants.length === 0) {
-    return <EventCardUI eventItem={eventItem} />;
-  }
-
-  const experiences = [
-    {
-      id: exp.sys.id,
-      name: exp?.ntName ?? "Experiment",
-      type: exp?.ntType ?? "experiment",
-      trafficAllocation: 1,
-      distribution: [
-        { index: 0, start: 0, end: 0.5 },
-        { index: 1, start: 0.5, end: 1 },
-      ],
-      components: [
-        {
-          type: "nt_experience",
-          baseline: { id: eventItem.sys.id },
-          variants: safeVariants.map((v: any) => ({ id: v.id })),
-        },
-      ],
-      audience: exp?.ntAudience?.sys?.id
-        ? { id: exp.ntAudience.sys.id as string }
-        : undefined,
-      variants: safeVariants,
-    },
-  ] as unknown as ExperienceConfiguration<any>[];
-
-  const { variant, variantIndex, loading, isPersonalized } = useExperience({
-    baseline: { ...eventItem, id: eventItem.sys.id },
-    experiences,
+  console.log("[NT:Card] ▶️", eventItem?.name, {
+    sysId: eventItem?.sys?.id,
+    expId: exp?.sys?.id ?? "❌ NO EXPERIMENT",
+    ntConfig: exp?.ntConfig ?? "❌ MISSING",
+    inlineVariants:
+      exp?.ntVariantsCollection?.items?.map((v: any) => ({
+        id: v?.sys?.id,
+        name: v?.name,
+      })) ?? [],
+    registeredExpIds: registeredExperiences.map((e: any) => e?.id),
   });
 
-  // Use NT-assigned variant; fall back to baseline
-  const finalEvent: any =
-    isPersonalized && variant ? variant : eventItem;
+  // ── No experiment ─────────────────────────────────────────────────────────
+  if (!exp?.sys?.id) {
+    // Hide variant-only events — they render only via useExperience swap
+    const isVariant = registeredExperiences.some((regExp: any) =>
+      (regExp?.components ?? []).some((comp: any) =>
+        (comp?.variants ?? []).some((v: any) => v?.id === eventItem?.sys?.id)
+      )
+    );
 
-  // Track visit.count once NT has resolved the variant
+    if (isVariant) {
+      console.log("[NT:Card] 🙈 HIDING", eventItem?.name, "— variant card");
+      return null;
+    }
+
+    return (
+      <EventCardUI
+        eventItem={eventItem}
+        onClick={() => {
+          console.log("[NT:Click] 🖱️ Standalone card clicked:", eventItem?.name);
+          track("ctr", { eventId: eventItem?.sys?.id, variantIndex: 0 });
+          track("eventbooking.count", {
+            eventId: eventItem?.sys?.id,
+            variantIndex: 0,
+          });
+        }}
+      />
+    );
+  }
+
+  // ── Build raw experience — audience intentionally omitted ─────────────────
+  // Omitting audience removes the audience gate so all visitors are eligible.
+  // Previously: audience check failed because profile.audiences[] = []
+  // (NT cloud returns empty for GraphQL CMSes) → always showed baseline.
+  const rawExperience = {
+    id: exp.sys.id,
+    name: exp?.ntName ?? "Experiment",
+    type: exp?.ntType ?? "nt_experiment",
+    config: exp?.ntConfig ?? {},
+    // audience: INTENTIONALLY OMITTED — do NOT add back
+    variants: (exp?.ntVariantsCollection?.items ?? [])
+      .filter((v: any) => v?.sys?.id != null)
+      .map((v: any) => ({
+        id: v.sys.id, // REQUIRED at top level by ExperienceMapper
+        ...v,         // spread all event fields: name, slug, image, date etc.
+      })),
+  };
+
+  // OFFICIAL: filter with isExperienceEntry → transform with mapExperience
+  const mappedExperiences = [rawExperience]
+    .filter((e) => ExperienceMapper.isExperienceEntry(e))
+    .map((e) => ExperienceMapper.mapExperience(e));
+
+  console.log("[NT:Card] 🗺️ mapped:", {
+    isExperienceEntry: ExperienceMapper.isExperienceEntry(rawExperience),
+    mappedCount: mappedExperiences.length,
+    mappedIds: mappedExperiences.map((e: any) => e?.id),
+    variantIds: rawExperience.variants.map((v: any) => v?.id),
+  });
+
+  if (mappedExperiences.length === 0) {
+    console.warn(
+      "[NT:Card] ⚠️ ExperienceMapper rejected — ntConfig likely empty.",
+      "rawConfig:",
+      rawExperience.config
+    );
+    return <EventCardUI eventItem={eventItem} />;
+  }
+
+  return (
+    <ExperimentCardInner
+      eventItem={eventItem}
+      mappedExperiences={mappedExperiences}
+      track={track}
+    />
+  );
+}
+
+// ─── Inner — useExperience hook lives here (hooks must not be conditional) ────
+function ExperimentCardInner({
+  eventItem,
+  mappedExperiences,
+  track,
+}: {
+  eventItem: any;
+  mappedExperiences: ExperienceConfiguration<any>[];
+  track: any;
+}) {
+  // useExperience subscribes directly to the NT SDK profile state.
+  // When the preview plugin calls selectVariant(), the profile updates,
+  // this hook re-runs, and the correct variant renders automatically.
+  const { variant, variantIndex, loading, isPersonalized } = useExperience({
+    baseline: {
+      // CRITICAL: id at top level must match baseline sys.id
+      // This is how useExperience matches the component in the experience config
+      id: eventItem.sys.id,
+      ...eventItem,
+    },
+    experiences: mappedExperiences,
+  });
+
+  // ── TRACE LOG: fires on every SDK state change ────────────────────────────
+  // If clicking Baseline/Variant 1 in the sidebar does NOT trigger this log,
+  // the preview plugin's postMessage is not reaching the SDK instance.
+  // Root cause would be: provider remounted (key changed) killing the iframe.
+  console.log("[NT:Inner] 🔄 useExperience state:", eventItem?.name, {
+    loading,
+    isPersonalized,
+    variantIndex,
+    variantName: (variant as any)?.name ?? null,
+    variantId: (variant as any)?.id ?? (variant as any)?.sys?.id ?? null,
+    // If this never changes after sidebar click → SDK not receiving postMessage
+    timestamp: new Date().toISOString(),
+  });
+
+  // Resolve which event to render:
+  // variantIndex 0 = baseline (eventItem)
+  // variantIndex 1+ = variant (full event object spread from ntVariantsCollection)
+  const finalEvent: any =
+    !loading && isPersonalized && variantIndex > 0 && variant != null
+      ? variant
+      : eventItem;
+
+  console.log(
+    "[NT:Inner] 🎯",
+    variantIndex > 0
+      ? `🔀 VARIANT ${variantIndex} → ${finalEvent?.name}`
+      : `✅ BASELINE → ${finalEvent?.name}`
+  );
+
+  // Track impression once variant is resolved (not on every render)
   useEffect(() => {
-    if (!loading && finalEvent) {
+    if (!loading) {
+      console.log(
+        "[NT:Inner] 📊 Impression tracked — visit.count:",
+        finalEvent?.name,
+        "| variantIndex:",
+        variantIndex
+      );
       track("visit.count", {
         eventId: finalEvent?.sys?.id,
         variantIndex,
       });
     }
-  }, [loading]);
-
-  const handleClick = () => {
-    track("ctr", { eventId: finalEvent?.sys?.id, variantIndex });
-    track("eventbooking.count", { eventId: finalEvent?.sys?.id, variantIndex });
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, variantIndex]);
 
   if (loading) {
-    return (
-      <div
-        style={{ height: "280px", background: "#f3f4f6", borderRadius: "16px" }}
-      />
-    );
+    console.log("[NT:Inner] ⏳ Loading skeleton for:", eventItem?.name);
+    return <EventCardSkeleton />;
   }
 
-  return <EventCardUI eventItem={finalEvent} onClick={handleClick} />;
+  return (
+    <EventCardUI
+      eventItem={finalEvent}
+      onClick={() => {
+        // ── TRACE LOG: fires when the rendered card is clicked ────────────
+        // This is the card click (navigate to event), NOT the sidebar click.
+        // Sidebar clicks are handled by the preview plugin internally.
+        console.log(
+          "[NT:Click] 🖱️ Card clicked:",
+          finalEvent?.name,
+          "| variantIndex:",
+          variantIndex,
+          "| eventId:",
+          finalEvent?.sys?.id
+        );
+        track("ctr", { eventId: finalEvent?.sys?.id, variantIndex });
+        track("eventbooking.count", {
+          eventId: finalEvent?.sys?.id,
+          variantIndex,
+        });
+      }}
+    />
+  );
 }
 
-// ─── Pure UI ────────────────────────────────────────────
+// ─── Pure UI ──────────────────────────────────────────────────────────────────
+// Always receives a fully resolved eventItem.
+// Used by both standalone (no experiment) and ExperimentCardInner (with experiment).
 function EventCardUI({
   eventItem,
   onClick,
@@ -96,6 +232,11 @@ function EventCardUI({
   onClick?: () => void;
 }) {
   const imageUrl = getImageUrl(eventItem?.mediaField);
+
+  console.log("[NT:UI] 🖼️ Rendering:", eventItem?.name, {
+    slug: eventItem?.slug,
+    hasImage: !!imageUrl,
+  });
 
   return (
     <Link
@@ -115,7 +256,15 @@ function EventCardUI({
           cursor: "pointer",
         }}
       >
-        <div style={{ width: "100%", height: "180px", overflow: "hidden", flexShrink: 0 }}>
+        {/* ── Image ── */}
+        <div
+          style={{
+            width: "100%",
+            height: "180px",
+            overflow: "hidden",
+            flexShrink: 0,
+          }}
+        >
           {imageUrl ? (
             <img
               src={imageUrl}
@@ -125,27 +274,54 @@ function EventCardUI({
           ) : (
             <div
               style={{
-                width: "100%", height: "100%", background: "#e5e7eb",
-                display: "flex", alignItems: "center",
-                justifyContent: "center", color: "#9ca3af", fontSize: "14px",
+                width: "100%",
+                height: "100%",
+                background: "#e5e7eb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#9ca3af",
+                fontSize: "14px",
               }}
             >
               No Image
             </div>
           )}
         </div>
-        <div style={{ padding: "16px", display: "flex", flexDirection: "column", flexGrow: 1 }}>
-          <p style={{ fontSize: "12px", color: "#6b7280", marginBottom: "6px", margin: 0 }}>
+
+        {/* ── Content ── */}
+        <div
+          style={{
+            padding: "16px",
+            display: "flex",
+            flexDirection: "column",
+            flexGrow: 1,
+          }}
+        >
+          <p
+            style={{
+              fontSize: "12px",
+              color: "#6b7280",
+              marginBottom: "6px",
+              margin: 0,
+            }}
+          >
             {eventItem?.startDate
               ? new Date(eventItem.startDate).toDateString()
               : ""}
           </p>
           <h2
             style={{
-              fontSize: "14px", fontWeight: 600, color: "#1f2937",
-              marginTop: "6px", marginBottom: "auto",
-              display: "-webkit-box", WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical", overflow: "hidden", minHeight: "40px",
+              fontSize: "14px",
+              fontWeight: 600,
+              color: "#1f2937",
+              marginTop: "6px",
+              marginBottom: "auto",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+              minHeight: "40px",
             }}
           >
             {eventItem?.name ?? "Untitled Event"}
@@ -153,8 +329,11 @@ function EventCardUI({
           <div style={{ marginTop: "12px" }}>
             <span
               style={{
-                fontSize: "12px", background: "#dcfce7",
-                color: "#15803d", padding: "4px 10px", borderRadius: "999px",
+                fontSize: "12px",
+                background: "#dcfce7",
+                color: "#15803d",
+                padding: "4px 10px",
+                borderRadius: "999px",
               }}
             >
               Event

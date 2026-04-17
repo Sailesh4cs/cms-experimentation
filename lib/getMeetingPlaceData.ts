@@ -33,10 +33,15 @@ export const GET_EVENT_LIST = gql`
                   sys { id }
                   ntName
                   ntType
+                  # CRITICAL FIX: ntConfig contains distribution + components
+                  # ExperienceMapper.mapExperience() reads this field
+                  # Without it config:{} → mapper produces empty experience → no swap
+                  ntConfig
                   ntAudience {
                     sys { id }
+                    ntName
                   }
-                  ntVariantsCollection(limit: 2) {
+                  ntVariantsCollection(limit: 5) {
                     items {
                       ... on MeetingPlacePageEvent {
                         sys { id }
@@ -70,7 +75,9 @@ export type NinetailedExperience = {
   sys: { id: string };
   ntName?: string;
   ntType?: string;
-  ntAudience?: { sys: { id: string } } | null;
+  // FIX: added ntConfig to type
+  ntConfig?: Record<string, any>;
+  ntAudience?: { sys: { id: string }; ntName?: string } | null;
   ntVariantsCollection?: {
     items: EventItem[];
   };

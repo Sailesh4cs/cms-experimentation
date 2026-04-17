@@ -19,7 +19,8 @@ export default function EventListWithExperiment({ events }: Props) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "24px" }}>
         {events.map((eventItem: any, index: number) => (
           <div key={`${eventItem?.sys?.id ?? index}`} style={{ minWidth: 0 }}>
-            <EventCard eventItem={eventItem} />
+            {/* FIX: pass allEvents so EventCard can resolve full variant objects */}
+            <EventCard eventItem={eventItem} allEvents={events} />
           </div>
         ))}
       </div>
