@@ -88,10 +88,17 @@ async function fetchNinetailedContent(): Promise<NtContextValue> {
           typeof config.traffic === "number" ? config.traffic : 1;
 
         const rawComponents: any[] = config.components ?? [];
+
+        // 🔶 FIX 2 (MEDIUM) — Enforce type: "nt_experience" on every component
+        // ROOT CAUSE: Contentful's nt_config may not include the `type` field
+        // on each component object. The NT SDK uses type === "nt_experience" as
+        // a gate before processing the component. If missing, the experience is
+        // silently skipped → variants are never served → insights show no data.
+        // FIX: Always set type: "nt_experience" when mapping components.
         const components = rawComponents
           .filter((c: any) => String(c?.baseline?.id ?? "") !== "")
           .map((c: any) => ({
-            type: "nt_experience",
+            type: "nt_experience", // ← ALWAYS enforce; do not rely on Contentful to set this
             baseline: { id: String(c.baseline.id) },
             variants: (c.variants ?? [])
               .filter((v: any) => String(v?.id ?? "") !== "")

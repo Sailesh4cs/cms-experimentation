@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useMemo, useCallback } from "react";
 import { getImageUrl } from "@/lib/getImageUrl";
 import {
   useNinetailed,
@@ -74,28 +74,47 @@ function ExperimentCard({
     );
   }
 
-  // ── Build raw experience — audience intentionally omitted ─────────────────
-  // Omitting audience removes the audience gate so all visitors are eligible.
-  // Previously: audience check failed because profile.audiences[] = []
-  // (NT cloud returns empty for GraphQL CMSes) → always showed baseline.
-  const rawExperience = {
-    id: exp.sys.id,
-    name: exp?.ntName ?? "Experiment",
-    type: exp?.ntType ?? "nt_experiment",
-    config: exp?.ntConfig ?? {},
-    // audience: INTENTIONALLY OMITTED — do NOT add back
-    variants: (exp?.ntVariantsCollection?.items ?? [])
-      .filter((v: any) => v?.sys?.id != null)
-      .map((v: any) => ({
-        id: v.sys.id, // REQUIRED at top level by ExperienceMapper
-        ...v,         // spread all event fields: name, slug, image, date etc.
-      })),
-  };
+  // 🔥 FIX 1 (URGENT) — useMemo on rawExperience
+  // ROOT CAUSE: rawExperience was rebuilt as a NEW object on every render.
+  // useExperience() received a new reference each time → triggered its own
+  // internal state update → caused an infinite re-render loop.
+  // FIX: Memoize rawExperience on stable primitive values (exp.sys.id, variant ids).
+  const variantIds = useMemo(
+    () =>
+      (exp?.ntVariantsCollection?.items ?? [])
+        .filter((v: any) => v?.sys?.id != null)
+        .map((v: any) => v.sys.id as string),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [exp?.sys?.id]
+  );
+
+  const rawExperience = useMemo(
+    () => ({
+      id: exp.sys.id,
+      name: exp?.ntName ?? "Experiment",
+      type: exp?.ntType ?? "nt_experiment",
+      config: exp?.ntConfig ?? {},
+      // audience: INTENTIONALLY OMITTED — do NOT add back
+      // Omitting audience removes the audience gate so all visitors are eligible.
+      variants: (exp?.ntVariantsCollection?.items ?? [])
+        .filter((v: any) => v?.sys?.id != null)
+        .map((v: any) => ({
+          id: v.sys.id, // REQUIRED at top level by ExperienceMapper
+          ...v,         // spread all event fields: name, slug, image, date etc.
+        })),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [exp?.sys?.id, variantIds.join(",")]
+  );
 
   // OFFICIAL: filter with isExperienceEntry → transform with mapExperience
-  const mappedExperiences = [rawExperience]
-    .filter((e) => ExperienceMapper.isExperienceEntry(e))
-    .map((e) => ExperienceMapper.mapExperience(e));
+  const mappedExperiences = useMemo(
+    () =>
+      [rawExperience]
+        .filter((e) => ExperienceMapper.isExperienceEntry(e))
+        .map((e) => ExperienceMapper.mapExperience(e)),
+    [rawExperience]
+  );
 
   console.log("[NT:Card] 🗺️ mapped:", {
     isExperienceEntry: ExperienceMapper.isExperienceEntry(rawExperience),
@@ -132,30 +151,31 @@ function ExperimentCardInner({
   mappedExperiences: ExperienceConfiguration<any>[];
   track: any;
 }) {
-  // useExperience subscribes directly to the NT SDK profile state.
-  // When the preview plugin calls selectVariant(), the profile updates,
-  // this hook re-runs, and the correct variant renders automatically.
-  const { variant, variantIndex, loading, isPersonalized } = useExperience({
-    baseline: {
-      // CRITICAL: id at top level must match baseline sys.id
-      // This is how useExperience matches the component in the experience config
+  // 🔥 FIX 1 (cont.) — Memoize the baseline object passed to useExperience.
+  // ROOT CAUSE: Without memoization, { id, ...eventItem } creates a new object
+  // reference on every render → useExperience sees a "new" baseline each time
+  // → triggers internal state update → infinite loop.
+  const baseline = useMemo(
+    () => ({
       id: eventItem.sys.id,
       ...eventItem,
-    },
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [eventItem?.sys?.id]
+  );
+
+  const { variant, variantIndex, loading, isPersonalized } = useExperience({
+    baseline,
     experiences: mappedExperiences,
   });
 
   // ── TRACE LOG: fires on every SDK state change ────────────────────────────
-  // If clicking Baseline/Variant 1 in the sidebar does NOT trigger this log,
-  // the preview plugin's postMessage is not reaching the SDK instance.
-  // Root cause would be: provider remounted (key changed) killing the iframe.
   console.log("[NT:Inner] 🔄 useExperience state:", eventItem?.name, {
     loading,
     isPersonalized,
     variantIndex,
     variantName: (variant as any)?.name ?? null,
     variantId: (variant as any)?.id ?? (variant as any)?.sys?.id ?? null,
-    // If this never changes after sidebar click → SDK not receiving postMessage
     timestamp: new Date().toISOString(),
   });
 
@@ -173,6 +193,26 @@ function ExperimentCardInner({
       ? `🔀 VARIANT ${variantIndex} → ${finalEvent?.name}`
       : `✅ BASELINE → ${finalEvent?.name}`
   );
+
+  // 🔥 FIX 1 (cont.) — Stable handleClick via useCallback
+  // Prevents a new function reference on every render from being passed to
+  // EventCardUI, which would otherwise cause unnecessary re-renders.
+  const handleClick = useCallback(() => {
+    console.log(
+      "[NT:Click] 🖱️ Card clicked:",
+      finalEvent?.name,
+      "| variantIndex:",
+      variantIndex,
+      "| eventId:",
+      finalEvent?.sys?.id
+    );
+    track("ctr", { eventId: finalEvent?.sys?.id, variantIndex });
+    track("eventbooking.count", {
+      eventId: finalEvent?.sys?.id,
+      variantIndex,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finalEvent?.sys?.id, variantIndex]);
 
   // Track impression once variant is resolved (not on every render)
   useEffect(() => {
@@ -196,29 +236,7 @@ function ExperimentCardInner({
     return <EventCardSkeleton />;
   }
 
-  return (
-    <EventCardUI
-      eventItem={finalEvent}
-      onClick={() => {
-        // ── TRACE LOG: fires when the rendered card is clicked ────────────
-        // This is the card click (navigate to event), NOT the sidebar click.
-        // Sidebar clicks are handled by the preview plugin internally.
-        console.log(
-          "[NT:Click] 🖱️ Card clicked:",
-          finalEvent?.name,
-          "| variantIndex:",
-          variantIndex,
-          "| eventId:",
-          finalEvent?.sys?.id
-        );
-        track("ctr", { eventId: finalEvent?.sys?.id, variantIndex });
-        track("eventbooking.count", {
-          eventId: finalEvent?.sys?.id,
-          variantIndex,
-        });
-      }}
-    />
-  );
+  return <EventCardUI eventItem={finalEvent} onClick={handleClick} />;
 }
 
 // ─── Pure UI ──────────────────────────────────────────────────────────────────
